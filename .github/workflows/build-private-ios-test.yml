@@ -18,8 +18,9 @@ jobs:
       - name: Checkout private source
         uses: actions/checkout@v4
         with:
+          # Replace both placeholders before pushing this file.
           repository: fushaoje444-ctrl/central-bank-app
-          ref: f39409d2d9d3b3403598e688dbb28786c1e67e2a
+          ref: b5e5d3650bd9e5703b58e1b41707f64548120827
           ssh-key: ${{ secrets.PRIVATE_SOURCE_SSH_KEY }}
           persist-credentials: false
           path: source
@@ -30,15 +31,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "f39409d2d9d3b3403598e688dbb28786c1e67e2a"
+          test "$(git rev-parse HEAD)" = "b5e5d3650bd9e5703b58e1b41707f64548120827"
           echo "Private source revision verified"
 
       - name: Install XcodeGen
         run: brew install xcodegen
 
       - name: Generate AppIcon sizes
-        shell: bash
         working-directory: source
+        shell: bash
         run: |
           set -euo pipefail
           SRC="public/icons/icon-512.png"
@@ -56,8 +57,8 @@ jobs:
           sips -z 1024 1024 "$SRC" --out "$DEST/AppIcon-1024.png" >/dev/null
 
       - name: Bundle complete web frontend
-        shell: bash
         working-directory: source
+        shell: bash
         run: |
           set -euo pipefail
           rm -rf ios-shell/WebAssets
@@ -71,8 +72,8 @@ jobs:
           du -sh ios-shell/WebAssets
 
       - name: Install bundled iOS compatibility bridge
-        shell: bash
         working-directory: source
+        shell: bash
         run: |
           set -euo pipefail
           test -f ios-shell/WebAssetsOverrides/ui/js/core/ios-bundled-compat.js
