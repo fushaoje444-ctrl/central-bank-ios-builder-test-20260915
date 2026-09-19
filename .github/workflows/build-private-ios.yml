@@ -1,0 +1,148 @@
+name: Build unsigned iOS IPA (private source via deploy key)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: "private central-bank-app commit SHA (40 hex)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout private source at the exact commit
+        uses: actions/checkout@v4
+        with:
+          repository: fushaoje444-ctrl/central-bank-app
+          ssh-key: ${{ secrets.PRIVATE_REPO_DEPLOY_KEY }}
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 1
+
+      - name: Verify checked-out commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ inputs.source_sha }}"
+          echo "source commit: $(git rev-parse HEAD)"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate AppIcon sizes
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="public/icons/icon-512.png"
+          DEST="ios-shell/CentralBank/Assets.xcassets/AppIcon.appiconset"
+          test -f "$SRC"
+          mkdir -p "$DEST"
+          sips -z 40 40 "$SRC" --out "$DEST/AppIcon-40.png" >/dev/null
+          sips -z 60 60 "$SRC" --out "$DEST/AppIcon-60.png" >/dev/null
+          sips -z 58 58 "$SRC" --out "$DEST/AppIcon-58.png" >/dev/null
+          sips -z 87 87 "$SRC" --out "$DEST/AppIcon-87.png" >/dev/null
+          sips -z 80 80 "$SRC" --out "$DEST/AppIcon-80.png" >/dev/null
+          sips -z 120 120 "$SRC" --out "$DEST/AppIcon-120.png" >/dev/null
+          cp "$DEST/AppIcon-120.png" "$DEST/AppIcon-120-home.png"
+          sips -z 180 180 "$SRC" --out "$DEST/AppIcon-180.png" >/dev/null
+          sips -z 1024 1024 "$SRC" --out "$DEST/AppIcon-1024.png" >/dev/null
+
+      - name: Bundle complete web frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf ios-shell/WebAssets
+          mkdir -p ios-shell/WebAssets
+          rsync -a --delete public/ ios-shell/WebAssets/
+          test -f ios-shell/WebAssets/index.html
+          test -f ios-shell/WebAssets/build-info.js
+          test -f ios-shell/WebAssets/ui/js/core/profile-local-authority.js
+          test -d ios-shell/WebAssets/ui
+          echo "Bundled frontend files: $(find ios-shell/WebAssets -type f | wc -l | tr -d ' ')"
+          du -sh ios-shell/WebAssets
+
+      - name: Install bundled iOS compatibility bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f ios-shell/WebAssetsOverrides/ui/js/core/ios-bundled-compat.js
+          mkdir -p ios-shell/WebAssets/ui/js/core
+          cp ios-shell/WebAssetsOverrides/ui/js/core/ios-bundled-compat.js ios-shell/WebAssets/ui/js/core/ios-bundled-compat.js
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("ios-shell/WebAssets/index.html")
+          text = path.read_text(encoding="utf-8")
+          bridge = '<script src="./ui/js/core/ios-bundled-compat.js?v=build17"></script>'
+          marker = '<script src="./ui/js/core/profile-local-authority.js?v=r694"></script>'
+          if bridge not in text:
+              if marker not in text:
+                  raise SystemExit("profile-local-authority script marker not found")
+              text = text.replace(marker, f"{bridge}\n{marker}", 1)
+              path.write_text(text, encoding="utf-8")
+          PY
+          grep -Fq 'ios-bundled-compat.js?v=build17' ios-shell/WebAssets/index.html
+
+      - name: Generate Xcode project
+        working-directory: ios-shell
+        run: xcodegen generate
+
+      - name: Build device app without signing
+        working-directory: ios-shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project CentralBank.xcodeproj \
+            -scheme CentralBank \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            build
+
+      - name: Verify bundled frontend
+        working-directory: ios-shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          test -f "$APP_PATH/WebAssets/index.html"
+          test -f "$APP_PATH/WebAssets/ui/js/core/event-sync.js"
+          test -f "$APP_PATH/WebAssets/ui/js/core/profile-local-authority.js"
+          test -f "$APP_PATH/WebAssets/ui/js/core/ios-bundled-compat.js"
+          grep -Fq 'ios-bundled-compat.js?v=build17' "$APP_PATH/WebAssets/index.html"
+          test -d "$APP_PATH/WebAssets/wealth-icons"
+          echo "Packaged frontend files: $(find "$APP_PATH/WebAssets" -type f | wc -l | tr -d ' ')"
+          du -sh "$APP_PATH/WebAssets"
+
+      - name: Package unsigned IPA
+        working-directory: ios-shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          rm -rf package CentralBank-unsigned.ipa
+          mkdir -p package/Payload
+          cp -R "$APP_PATH" package/Payload/CentralBank.app
+          (cd package && zip -qry ../CentralBank-unsigned.ipa Payload)
+          shasum -a 256 CentralBank-unsigned.ipa | tee CentralBank-unsigned.ipa.sha256
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: CentralBank-unsigned-ipa
+          path: |
+            ios-shell/CentralBank-unsigned.ipa
+            ios-shell/CentralBank-unsigned.ipa.sha256
+          if-no-files-found: error
+          retention-days: 30
