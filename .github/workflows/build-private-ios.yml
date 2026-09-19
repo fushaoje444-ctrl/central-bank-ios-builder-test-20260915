@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: "private central-bank-app commit SHA (40 hex)"
+        description: "private source commit SHA (40 hex)"
         required: true
         type: string
 
